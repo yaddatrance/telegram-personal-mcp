@@ -1,0 +1,13 @@
+{
+  "environment": "Windows, Python 3.12",
+  "test_command": "python -m unittest discover -s tests -v",
+  "tests_run": 60,
+  "failures": 0,
+  "skips": 0,
+  "pip_check": "No broken requirements found",
+  "telegram_transport": "fake or mocked; zero live requests",
+  "stdio": "official MCP SDK subprocess handshake and simulated send",
+  "http": "in-memory ASGI client, ephemeral synthetic RSA signing keys",
+  "visual": "isolated headless Chrome, desktop and mobile; see browser-check.json",
+  "limits": "No real Telegram login, deployed identity provider, public endpoint or live ChatGPT connection tested"
+}

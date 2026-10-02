@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ken-telegram-mcp"
+version = "0.1.0"
+description = "Personal Telegram MCP with explicit sends, an offline demo, and owner-scoped OAuth"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["mcp==1.26.0", "Telethon==1.45.0", "httpx==0.28.1", "PyJWT[crypto]==2.15.1", "uvicorn==0.54.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2"]
+
+[project.urls]
+Repository = "https://github.com/yaddatrance/telegram-personal-mcp"
+
+[project.scripts]
+ken-telegram = "ken_mcp.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["ken_mcp*"]
+
+[tool.setuptools.package-data]
+ken_mcp = ["*.html", "*.css", "*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

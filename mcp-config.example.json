@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "telegram-personal-demo": {
+      "command": "C:\\path\\to\\telegram-personal-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "ken_mcp", "serve", "--data-dir", "C:\\path\\to\\telegram-personal-mcp\\.local\\demo"],
+      "cwd": "C:\\path\\to\\telegram-personal-mcp"
+    }
+  }
+}

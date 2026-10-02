@@ -1,0 +1,10 @@
+{
+  "issuer": "https://YOUR-ISSUER.example.invalid/",
+  "jwks_url": "https://YOUR-ISSUER.example.invalid/.well-known/jwks.json",
+  "resource_url": "https://YOUR-MCP.example.invalid/mcp",
+  "owner_subject": "EXACT-OWNER-SUBJECT-FROM-VERIFIED-ISSUER",
+  "telegram_account_id": "9000",
+  "allowed_client_ids": ["EXACT-REGISTERED-CHATGPT-OAUTH-CLIENT-ID"],
+  "client_id_claim": "azp",
+  "max_token_seconds": 3600
+}
