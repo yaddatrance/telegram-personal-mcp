@@ -33,6 +33,11 @@ function render(item) {
   const who=node("div", ""); who.append(node("div", item.peer_name, "person"), node("div", "PEER " + item.peer_id + (item.reply_to_message_id ? " · REPLY TO #" + item.reply_to_message_id : " · DIRECT MESSAGE"), "meta"));
   recipient.append(who); top.append(recipient, node("span", item.locally_approved ? "Approved locally" : item.status, "status"));
   card.append(top, node("div", item.text, "message"), node("p", "EXACT PREVIEW · " + item.preview_sha256, "hash"));
+  if (item.attachment) {
+    const file = item.attachment;
+    card.append(node("p", "FILE: " + file.filename + " | " + file.size_bytes + " bytes | " + file.mime_type),
+      node("p", "FILE SHA-256: " + file.sha256, "hash"));
+  }
   const actions=node("div", "", "actions");
   actions.append(node("p", item.detail || "Approval is valid for 5 minutes. Your assistant still needs an explicit send instruction.", ""));
   if (item.status === "prepared") {

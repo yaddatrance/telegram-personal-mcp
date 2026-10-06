@@ -10,6 +10,8 @@ storage currently requires Windows; Linux supports demo and offline tests.
 - Install with `python -m pip install -e ".[test]"` using that environment.
 - Run `python -m unittest discover -s tests -v`, `python -m pip check`, and
   `python scripts/audit_public_tree.py --history` in a Git checkout.
+- Before staging, check edits and unignored new files with
+  `python scripts/audit_public_tree.py --working-tree --history` too.
 - Optional UI QA: Node 22+ and Chrome, `node scripts/browser-check.mjs` with
   `KEN_QA_PYTHON` set to the venv executable. Use only its isolated fake profile.
 - Do not claim live Telegram or ChatGPT integration was tested from fake tests.

@@ -1,0 +1,10 @@
+{
+  "mode": "synthetic demo",
+  "desktop": "1440x1000",
+  "mobile": "390x844",
+  "cardRendered": true,
+  "attachmentMetadataRendered": true,
+  "ownerApprovalWorked": true,
+  "overflow": false,
+  "liveTelegramRequests": 0
+}

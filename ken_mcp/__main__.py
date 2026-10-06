@@ -11,14 +11,14 @@ from .store import Store, UserError
 from .transport import FakeTransport, TransportError
 
 
-async def serve(directory, live, enable_sends, require_local_approval):
+async def serve(directory, live, enable_sends, require_local_approval, attachment_dir=None):
     from .server import create_server
     from .account import connect_existing
     with ProfileLock(directory):
         transport = await connect_existing(directory) if live else FakeTransport()
         store = Store(directory / "outbox.sqlite3", "live" if live else "demo")
         try:
-            service = Messenger(store, transport, enable_sends, require_local_approval)
+            service = Messenger(store, transport, enable_sends, require_local_approval, attachment_dir)
             await service.start()
             await create_server(service).run_stdio_async()
         finally:
@@ -34,7 +34,10 @@ def parser():
         command.add_argument("--data-dir", type=Path)
         if name != "login":
             command.add_argument("--live", action="store_true")
+        else:
+            command.add_argument("--save-session", action="store_true", help="Save the encrypted session after owner login without another prompt when persistence is already authorized")
         if name in ("serve", "serve-http"):
+            command.add_argument("--attachment-dir", type=Path, help="Folder containing only documents explicitly staged for sending; defaults to PROFILE/attachments")
             command.add_argument("--enable-sends", action="store_true", help="Explicitly enable live sends for specifically user-authorized MCP requests")
             command.add_argument("--require-local-approval", action="store_true", help="Optional strict mode: require a separate owner review click per message")
         if name == "serve-http":
@@ -55,15 +58,15 @@ def main():
     directory = (args.data_dir or default_data_dir(live)).resolve()
     try:
         if args.command == "serve":
-            asyncio.run(serve(directory, live, args.enable_sends, args.require_local_approval))
+            asyncio.run(serve(directory, live, args.enable_sends, args.require_local_approval, args.attachment_dir))
         elif args.command == "serve-http":
             from .remote import RemoteConfig, serve_http
             asyncio.run(serve_http(directory, live, args.enable_sends, args.require_local_approval,
-                                   RemoteConfig.read(args.config), args.port))
+                                   RemoteConfig.read(args.config), args.port, args.attachment_dir))
         elif args.command == "login":
             from .account import login
             with ProfileLock(directory):
-                asyncio.run(login(directory))
+                asyncio.run(login(directory, save_session=args.save_session))
         elif args.command in ("review", "demo"):
             from .review import run_review
             if args.command == "demo":
@@ -87,6 +90,8 @@ def main():
                 print("Account: {} | To: {} ({}) | Reply: {}".format(row["account_id"], repr(row["peer_name"]), row["peer_id"], row["reply_to"]))
                 # repr escapes terminal control sequences in untrusted message content.
                 print("Exact message (escaped representation):\n" + repr(row["text"]))
+                if row.get("attachment"):
+                    print("Attachment metadata (escaped representation): " + repr(row["attachment"]))
                 print("Preview SHA-256: " + row["digest"])
                 if input("Type APPROVE to allow this exact send for five minutes: ") == "APPROVE":
                     store.approve_local(row["id"], row["digest"])
@@ -100,8 +105,12 @@ def main():
         return 1
     except KeyboardInterrupt:
         return 0
-    except Exception:
-        print("Operation failed. No sensitive exception details were logged. Check local setup and account status.", file=sys.stderr)
+    except Exception as error:
+        if args.command == "login":
+            from .login_errors import login_failure
+            print(login_failure("starting the local login", error), file=sys.stderr)
+        else:
+            print("Operation failed. No sensitive exception details were logged. Check local setup and account status.", file=sys.stderr)
         return 1
     return 0
 

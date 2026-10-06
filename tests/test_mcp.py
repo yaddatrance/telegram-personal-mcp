@@ -10,6 +10,33 @@ from ken_mcp.store import Store
 
 @unittest.skipUnless(importlib.util.find_spec("mcp"), "Install project dependencies for MCP protocol checks")
 class MCPIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_attachment_tools_preview_and_simulated_send_over_stdio(self):
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = Path(directory) / "attachments"
+            inbox.mkdir()
+            (inbox / "sample.epub").write_bytes(b"synthetic document")
+            parameters = StdioServerParameters(command=sys.executable,
+                args=["-m", "ken_mcp", "serve", "--data-dir", directory],
+                cwd=str(Path(__file__).resolve().parents[1]))
+            async with stdio_client(parameters) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    files = await session.call_tool("list_attachments", {})
+                    self.assertEqual(files.structuredContent["files"][0]["filename"], "sample.epub")
+                    await session.call_tool("list_contacts", {})
+                    prepared = await session.call_tool("prepare_attachment", {"peer_id": "1001", "filename": "sample.epub",
+                        "caption": "Exact caption", "idempotency_key": "mcp-document-key-01"})
+                    self.assertFalse(prepared.isError)
+                    draft = prepared.structuredContent
+                    self.assertEqual(draft["attachment"]["mime_type"], "application/epub+zip")
+                    args = {"draft_id": draft["draft_id"], "preview_sha256": draft["preview_sha256"], "confirmation": "SEND", "user_authorized": True}
+                    sent = await session.call_tool("send_prepared_message", args)
+                    self.assertEqual(sent.structuredContent["status"], "simulated")
+                    again = await session.call_tool("send_prepared_message", args)
+                    self.assertEqual(again.structuredContent["message_id"], sent.structuredContent["message_id"])
+
     async def test_default_mode_user_authorized_send_needs_no_local_click(self):
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
@@ -47,7 +74,7 @@ class MCPIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     tools = await session.list_tools()
-                    self.assertEqual(len(tools.tools), 11)
+                    self.assertEqual(len(tools.tools), 13)
                     names = {tool.name: tool for tool in tools.tools}
                     self.assertNotIn("approve", names)
                     self.assertTrue(names["send_prepared_message"].annotations.destructiveHint)

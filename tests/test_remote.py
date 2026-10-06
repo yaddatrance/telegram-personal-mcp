@@ -93,17 +93,37 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status_code, 401)
         self.assertIn("resource_metadata=", result.headers["www-authenticate"])
 
+    async def test_attachment_tools_require_owner_and_send_scope(self):
+        inbox = Path(self.directory.name) / "attachments"
+        inbox.mkdir()
+        (inbox / "sample.epub").write_bytes(b"synthetic EPUB")
+        unauthorized = await self.rpc("tools/call", {"name": "list_attachments", "arguments": {}})
+        self.assertEqual(unauthorized.status_code, 401)
+        for tool, args in (("list_attachments", {}), ("prepare_attachment", {"peer_id": "1001", "filename": "sample.epub", "idempotency_key": "http-document-key-01"})):
+            result = await self.call(tool, args, token=self.token(sub="another-owner"))
+            self.assertEqual(result.status_code, 401)
+        readonly = self.token(scope="telegram.read")
+        await self.call("list_chats", token=readonly)
+        prepared = await self.call("prepare_attachment", {"peer_id": "1001", "filename": "sample.epub", "idempotency_key": "http-document-key-01"}, token=readonly)
+        draft = prepared.json()["result"]["structuredContent"]
+        blocked = await self.call("send_prepared_message", self.send_args(draft), token=readonly)
+        self.assertTrue(blocked.json()["result"]["isError"])
+        self.assertEqual(self.transport.calls, [])
+        allowed = await self.call("send_prepared_message", self.send_args(draft))
+        self.assertEqual(allowed.json()["result"]["structuredContent"]["status"], "simulated")
+
     async def test_authenticated_initialize_and_security_metadata(self):
         result = await self.rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "offline-test", "version": "1"}}, self.token())
         self.assertEqual(result.status_code, 200)
         self.assertIn("serverInfo", result.json()["result"])
         tools = (await self.rpc("tools/list", token=self.token())).json()["result"]["tools"]
-        self.assertEqual(len(tools), 11)
+        self.assertEqual(len(tools), 13)
         send = next(tool for tool in tools if tool["name"] == "send_prepared_message")
         self.assertEqual(send["securitySchemes"][0]["scopes"], ["telegram.read", "telegram.send"])
         self.assertEqual(send["_meta"]["securitySchemes"], send["securitySchemes"])
 
     async def test_wrong_issuer_audience_subject_client_and_time_rejected(self):
+        initial_discovered = set(self.service.discovered)
         now = int(time.time())
         for override in ({"iss": "https://evil.example/"}, {"aud": "another-api"},
             {"aud": [self.config.resource_url, "another-api"]}, {"sub": "other-person"},
@@ -113,7 +133,7 @@ class RemoteTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(override=override):
                 response = await self.rpc("tools/list", token=self.token(**override))
                 self.assertEqual(response.status_code, 401)
-        self.assertEqual(self.service.discovered, set())
+        self.assertEqual(self.service.discovered, initial_discovered)
         self.assertEqual(self.transport.calls, [])
 
     async def test_invalid_signature_none_algorithm_and_untrusted_key_url(self):

@@ -9,6 +9,33 @@ const browserDir = resolve(root, '.local', 'chrome-qa-' + stamp);
 await mkdir(browserDir, {recursive:true});
 await mkdir(resolve(root, 'evidence'), {recursive:true});
 const pause = ms => new Promise(r => setTimeout(r, ms));
+const attachmentMode = process.argv.includes('--attachment');
+const evidencePrefix = attachmentMode ? 'attachment' : 'review';
+if (attachmentMode) {
+  const fixture = `
+import asyncio, sys
+from pathlib import Path
+from ken_mcp.store import Store
+from ken_mcp.service import Messenger
+from ken_mcp.transport import FakeTransport
+async def seed():
+    root = Path(sys.argv[1])
+    inbox = root / 'attachments'
+    inbox.mkdir(parents=True)
+    (inbox / 'sample.epub').write_bytes(b'Synthetic EPUB fixture for offline visual QA.')
+    store = Store(root / 'outbox.sqlite3', 'demo')
+    try:
+        service = Messenger(store, FakeTransport(), require_local_approval=True)
+        await service.start()
+        await service.list_peers()
+        await service.prepare('1001', 'Here is the sample EPUB.', 'browser-attachment-qa-01', attachment_filename='sample.epub')
+    finally:
+        store.close()
+asyncio.run(seed())
+`;
+  const seed = spawn(process.env.KEN_QA_PYTHON || 'python', ['-c', fixture, dataDir], {cwd:root,windowsHide:true,stdio:'ignore'});
+  await new Promise((res, rej) => { seed.on('error', rej); seed.on('exit', code => code === 0 ? res() : rej(Error('Synthetic attachment setup failed'))); });
+}
 const app = spawn(process.env.KEN_QA_PYTHON || 'python', ['-u', '-m', 'ken_mcp', 'demo', '--data-dir', dataDir, '--port', '0'], {cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});
 let output=''; app.stdout.on('data', b => output += b.toString());
 let browser, socket;
@@ -33,8 +60,10 @@ try {
   let ready=false;
   for(let i=0;i<100;i++){if(await evaluate('!!document.querySelector(".card")')){ready=true;break;}await pause(100);}
   if(!ready)throw Error('Review card did not render');
+  if(attachmentMode && !(await evaluate('document.body.textContent.includes("sample.epub") && document.body.textContent.includes("FILE SHA-256:")')))
+    throw Error('Attachment filename or file hash did not render');
   const desktop=await cdp('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});
-  await writeFile(resolve(root,'evidence','review-desktop.png'),Buffer.from(desktop.data,'base64'));
+  await writeFile(resolve(root,'evidence',evidencePrefix+'-desktop.png'),Buffer.from(desktop.data,'base64'));
   const overflow=await evaluate('document.documentElement.scrollWidth > window.innerWidth');
   if(overflow)throw Error('Desktop layout overflows');
   await evaluate('document.querySelector(".primary").click()');
@@ -45,8 +74,8 @@ try {
   await pause(200);
   if(await evaluate('document.documentElement.scrollWidth > window.innerWidth'))throw Error('Mobile layout overflows');
   const mobile=await cdp('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});
-  await writeFile(resolve(root,'evidence','review-mobile.png'),Buffer.from(mobile.data,'base64'));
-  await writeFile(resolve(root,'evidence','browser-check.json'),JSON.stringify({mode:'synthetic demo',desktop:'1440x1000',mobile:'390x844',cardRendered:true,ownerApprovalWorked:true,overflow:false,liveTelegramRequests:0},null,2));
+  await writeFile(resolve(root,'evidence',evidencePrefix+'-mobile.png'),Buffer.from(mobile.data,'base64'));
+  await writeFile(resolve(root,'evidence',attachmentMode ? 'attachment-browser-check.json' : 'browser-check.json'),JSON.stringify({mode:'synthetic demo',desktop:'1440x1000',mobile:'390x844',cardRendered:true,attachmentMetadataRendered:attachmentMode,ownerApprovalWorked:true,overflow:false,liveTelegramRequests:0},null,2));
   console.log('PASS: desktop/mobile rendering, no overflow, exact-preview approval. No live Telegram requests.');
   await cdp('Browser.close').catch(()=>{});
 } finally {socket?.close();browser?.kill();app.kill();}

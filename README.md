@@ -6,9 +6,9 @@ Use your personal Telegram account from a trusted MCP assistant, with exact mess
 
 - Local stdio MCP for desktop hosts.
 - OAuth-protected Streamable HTTP for a cloud connector, plus an official private-tunnel setup guide.
-- Eleven tools for identity, existing chats/contacts, bounded history, immutable previews, sending, replies and local status.
+- Thirteen tools for identity, existing chats/contacts, bounded history, document attachments, immutable previews, sending, replies and local status.
 - No autonomous replies, contact importing, bulk outreach or personal conversation imitation.
-- No real account, Telegram message, OAuth registration or cloud deployment was used in development.
+- Automated tests use fake Telegram transport and synthetic files; they send no real messages.
 
 [Cloud connection guide](docs/REMOTE.md) · [Security and limits](SECURITY.md) · [Agent instructions](AGENTS.md)
 
@@ -71,6 +71,8 @@ A cloud assistant cannot open your local stdio process directly. Use [the cloud 
 | `get_message` | Inspect a single message in an exact peer |
 | `prepare_message` | Create an immutable local preview with an idempotency key |
 | `prepare_reply` | Validate the reply belongs to that peer, then preview |
+| `list_attachments` | List filenames, sizes and types in the configured local inbox |
+| `prepare_attachment` | Snapshot one staged document and bind its hash to the recipient/caption |
 | `send_prepared_message` | Dispatch the exact authorized preview once |
 | `cancel_prepared_message` | Cancel an unsent local draft; does not delete Telegram messages |
 | `get_send_status` | Read persisted delivery outcome without retrying |
@@ -97,12 +99,34 @@ This creates ongoing access to a personal account. Perform it only when you want
    .\.venv\Scripts\python.exe -m ken_mcp login
    ```
 
-3. The wizard asks for `AUTHORIZE` before requesting a login code. API ID/hash, phone, login code and optional 2FA password use hidden input. Enter them only there, never in chat, command arguments, `.env`, source code or an MCP tool.
-4. Check the displayed identity, then type `SAVE` only if you want persistent access. The session and API credentials are encrypted with Windows DPAPI for this Windows user at `%LOCALAPPDATA%\KenTelegramMCP\live\credentials.dpapi`. No plaintext Telethon session is written. The folder ACL is restricted to the current user and SYSTEM. Existing credentials are not silently overwritten.
+3. Enter the API ID/hash and phone number to request a login code. These inputs, the login code and optional 2FA password are visible as you type in the local terminal. The app does not log these inputs. Enter them only there, never in chat, command arguments, `.env`, source code or an MCP tool. Failures report the login step, error type and numeric code with guidance, without displaying raw exception messages or credentials.
+4. Check the displayed identity, then answer the ordinary yes/no save question. The session and API credentials are encrypted with Windows DPAPI for this Windows user at `%LOCALAPPDATA%\KenTelegramMCP\live\credentials.dpapi`. No plaintext Telethon session is written. The folder ACL is restricted to the current user and SYSTEM. Existing credentials are not silently overwritten.
 5. Start read-only first: `.\.venv\Scripts\python.exe -m ken_mcp serve --live`. In your MCP host, inspect `get_identity` before any other live action.
 6. When you intend to enable requested sends, add `--enable-sends`. Every send still needs its exact preview and applicable specific user authorization. No separate desktop gate is imposed unless you add `--require-local-approval`.
 
 If saving is declined, the wizard attempts to revoke its temporary login. Revoke access at any time in Telegram **Settings > Devices**, selecting `Ken Telegram MCP`. Then stop the server and remove its local profile if desired. A restricted Windows sandbox may not have DPAPI access; perform the login in your own normal terminal. `.env.example` is documentation only; this application never loads it.
+
+When session saving is already authorized, use `login --save-session` to save after login without another confirmation. Login follows at most one explicit Telegram data-center redirect; it does not retry code requests after timeouts or rate limits. Message delivery retries remain disabled.
+
+## Send document attachments
+
+Place only documents the owner intends to share in the profile's `attachments` folder, or supply a dedicated folder using `--attachment-dir`. For the default live profile, the inbox is `%LOCALAPPDATA%\KenTelegramMCP\live\attachments`. File staging can be performed by a trusted assistant when the user has already identified the files to share; no additional owner typing or approval phrase is required.
+
+1. Call `list_attachments` and discover the exact recipient through chats/contacts.
+2. Call `prepare_attachment` with `peer_id`, the plain `filename`, a stable `idempotency_key`, optional `caption` and optional `reply_to_message_id`.
+3. Use `send_prepared_message` with that draft's exact preview hash and the user's existing specific authorization. Live sending must be enabled for that server process.
+
+The preview contains filename, MIME type, byte count and SHA-256. Each preview binds the file to the exact account, recipient, caption and reply. Preparing copies a local snapshot and does **not** upload anything. The send verifies that snapshot before the durable attempt claim; subsequent source-file edits cannot replace the prepared bytes. Files are sent as documents using [Telegram's `messages.sendMedia`](https://core.telegram.org/method/messages.sendMedia), preserving the outbox's stable `random_id`.
+
+Supported types: EPUB, PDF, TXT, PNG, JPG/JPEG, WEBP, DOCX, XLSX and PPTX, up to **50 MiB each**; captions up to **1024 UTF-16 units**. One file is sent per draft. Paths, URLs, alternate streams, symlinks, junctions and hard links are rejected. The inbox scan is limited to 200 entries. Types are selected by extension; the app does not execute or render file contents.
+
+The private profile retains plaintext snapshots under `attachment-blobs`, limited to **250 MiB** total. Remove unneeded snapshots locally only after associated drafts are finished; deleting one prevents an unsent draft from sending. Upload timeout is five minutes, followed by up to 30 seconds for dispatch; set the MCP host's tool timeout to at least 330 seconds when sending large files. An interrupted/uncertain upload or send is recorded as unknown and never automatically retried. Normal text sends retain their existing behavior.
+
+`get_send_status` includes persisted upload progress and whether message dispatch started. Rejections retain the known RPC error class, numeric code and failed stage without raw request data. Older drafts have no progress record; absence does not mean that no bytes uploaded. Live checks verified a small TXT attachment in Saved Messages and sender-side downloads from an authorized private chat, comparing byte counts and SHA-256. These checks do **not** verify that the recipient can download or open the file. Recipient-side compatibility, group delivery and other file formats still require live validation.
+
+If an attachment appears empty or a client reports a loading error, first save the **existing** attachment locally and check its byte size and whether an appropriate external app can open it. Record the Telegram app/version, device and exact error. A nonempty file that opens externally points to a preview problem; a failed or empty download leaves the download path unresolved. A matching sender-side hash alone cannot settle that distinction. Do not resend automatically, change MIME types speculatively or mark recipient verification complete based only on API acceptance.
+
+For Saved Messages, use the `saved_messages_peer_id` returned by `get_identity`. It is bound to the verified owner and does not require a contacts search. Private chats use the authenticated account's normal sender identity; group requests explicitly use the verified owner's concrete peer.
 
 ## Delivery behavior and limits
 
@@ -112,7 +136,7 @@ A timeout, cancellation, server failure or crash can leave delivery **unknown**.
 
 Forbidden, unauthorized, rejected and flood-wait outcomes are terminal. Flood waits persist a cooldown. A later new request requires a fresh authorized preview. Limits are 5 send attempts/minute, 30/hour and 30 remote Telegram read calls/minute. One MCP server runs per data profile; the optional review process can run beside it. Prepared drafts expire in 30 minutes. Recent identical successful sends are blocked for 10 minutes.
 
-Peers must be existing chats/contacts discovered in the running server. Replies are checked against the exact chat. Bots, broadcast channels, secret chats, attachments, purchases, scheduling and account administration are not supported. There is no bot `/start` or `/stop` flow: this is a personal-account client for deliberate conversations.
+Peers must be existing chats/contacts discovered in the running server. Replies are checked against the exact chat. Bots, broadcast channels, secret chats, purchases, scheduling and account administration are not supported. There is no bot `/start` or `/stop` flow: this is a personal-account client for deliberate conversations.
 
 History is not archived locally, but the outbox stores outgoing text and recipient names/IDs in plaintext SQLite inside the private profile. The assistant host receives tool results and may retain them under its own policies. Read [SECURITY.md](SECURITY.md) before remote use.
 
@@ -121,16 +145,21 @@ History is not archived locally, but the outbox stores outgoing text and recipie
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe scripts\audit_public_tree.py --working-tree --history
 .\.venv\Scripts\python.exe scripts\audit_public_tree.py --history
 ```
 
-Tests use fake Telegram transport and mocked Telethon requests. They cover exact peers/replies, immutable previews, explicit authorization, optional local approval, expiry, concurrent/duplicate sends, restart/crash recovery, forbidden/flood-wait/timeout behavior, bounded reads, profile isolation, synthetic DPAPI, real SDK stdio exchange, and OAuth HTTP isolation. Linux skips the Windows DPAPI test. HTTP tests use an in-memory ASGI client and ephemeral synthetic RSA keys; they do not test a deployed OAuth provider or a live ChatGPT connection.
+Tests use fake Telegram transport and mocked network I/O. They cover exact peers/replies, immutable previews, explicit authorization, optional local approval, expiry, concurrent/duplicate sends, restart/crash recovery, forbidden/flood-wait/timeout behavior, bounded reads, profile isolation, synthetic DPAPI, real SDK stdio exchange, and OAuth HTTP isolation. Attachment checks cover path/link restrictions, file size/quota, snapshot and recipient/hash binding, source edits, upload errors, persistence and scoped access. Real Telethon upload/serialization checks verify tiny and multipart files, exact chunk bytes, checksums, MIME/filename attributes and no dispatch after a rejected part, without connecting to Telegram. Linux skips the Windows DPAPI test; the symlink test skips only where Windows denies creation of the synthetic fixture. HTTP tests use an in-memory ASGI client and ephemeral synthetic RSA keys; they do not test a deployed OAuth provider or a live ChatGPT connection.
+
+The working-tree audit includes modified and unignored new files before staging. Before publishing, also run the default index/history audit after staging the reviewed payload. Neither audit includes ignored local files unless they were previously tracked; both reject EPUBs, attachment snapshots and private runtime paths.
 
 Optional browser QA requires Node 22+ and Chrome:
 
 ```powershell
 $env:KEN_QA_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
 node scripts\browser-check.mjs
+# Include a synthetic attachment preview and separate screenshots:
+node scripts\browser-check.mjs --attachment
 ```
 
 Set `KEN_QA_BROWSER` to a Chrome/Chromium executable if needed. The script uses a fresh fake profile, verifies desktop/mobile layouts and local approval, and writes synthetic screenshots to `evidence/`. No real browser profile or Telegram service is used.

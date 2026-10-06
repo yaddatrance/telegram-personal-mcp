@@ -1,11 +1,10 @@
 """Explicit local login, completely separate from the MCP tool surface."""
 import asyncio
-import getpass
 import re
 import sys
-import warnings
 
 from .security import load_credentials, save_credentials, secure_directory
+from .login_errors import login_failure
 from .store import UserError
 from .transport import TelethonTransport
 
@@ -36,60 +35,85 @@ async def connect_existing(directory):
         raise
 
 
-def hidden(prompt):
-    # Refuse getpass's plaintext fallback when there is no secure console.
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", getpass.GetPassWarning)
-        try:
-            return getpass.getpass(prompt)
-        except getpass.GetPassWarning:
-            raise UserError("Run login directly in a local Windows terminal with hidden input support.") from None
-
-
-async def login(directory):
+async def request_login_code(client, phone):
     from telethon import errors
+    try:
+        return await asyncio.wait_for(client.send_code_request(phone), 30)
+    except (errors.PhoneMigrateError, errors.NetworkMigrateError, errors.UserMigrateError):
+        # Telethon 1.45 switches DC then re-raises with request_retries=0.
+        # This explicit rejection did not send a code. Follow one redirect only;
+        # never repeat a timeout, flood wait or an uncertain/successful request.
+        print("Following Telegram's login data-center redirect...")
+        return await asyncio.wait_for(client.send_code_request(phone), 30)
+
+
+async def login(directory, save_session=False):
     if not sys.stdin.isatty():
         raise UserError("Login requires an interactive local terminal. Never pass credentials as command arguments.")
-    print("This authorizes a personal Telegram account and can save persistent access on this Windows user profile.")
-    print("No messages will be sent. Never paste API secrets, login codes or passwords into an assistant chat.")
-    if input("Type AUTHORIZE to request a Telegram login code: ").strip() != "AUTHORIZE":
-        raise UserError("Login cancelled before contacting Telegram.")
-    secure_directory(directory)
-    if (directory / "credentials.dpapi").exists():
-        raise UserError("This profile is already configured. Use a new profile or revoke the old session in Telegram before replacing it.")
-    api_id = hidden("API ID from my.telegram.org: ").strip()
-    api_hash = hidden("API hash (hidden): ").strip()
-    phone = hidden("Your phone number with country code (hidden): ").strip()
-    if not api_id.isdigit() or not re.fullmatch(r"[a-fA-F0-9]{32}", api_hash) or not re.fullmatch(r"\+[1-9][0-9]{6,14}", phone):
-        raise UserError("Invalid API ID, hash, or international phone format. No login request made.")
-    values = {"api_id": int(api_id), "api_hash": api_hash}
-    client = make_client(values)
+    print("Enter your Telegram app credentials below. Input is visible. No messages will be sent.")
+    stage = "loading Telegram dependencies"
+    client = None
     authenticated = False
     saved = False
     try:
+        from telethon import errors
+        stage = "preparing the local profile"
+        secure_directory(directory)
+        if (directory / "credentials.dpapi").exists():
+            raise UserError("This profile is already configured. Use a new profile or revoke the old session in Telegram before replacing it.")
+        stage = "reading local input"
+        api_id = input("API ID from my.telegram.org: ").strip()
+        api_hash = input("API hash: ").strip()
+        phone = input("Your phone number with country code: ").strip()
+        if not re.fullmatch(r"[0-9]{1,10}", api_id) or not 0 < int(api_id) <= 2147483647:
+            raise UserError("Invalid API ID. Enter the numeric API ID from my.telegram.org/apps. No login request made.")
+        if not re.fullmatch(r"[a-fA-F0-9]{32}", api_hash):
+            raise UserError("Invalid API hash. Enter the 32-character API hash from my.telegram.org/apps. No login request made.")
+        if not re.fullmatch(r"\+[1-9][0-9]{6,14}", phone):
+            raise UserError("Invalid phone format. Enter the international number starting with +. No login request made.")
+        values = {"api_id": int(api_id), "api_hash": api_hash}
+        stage = "creating the Telegram client"
+        client = make_client(values)
+        stage = "connecting to Telegram"
+        print("Connecting to Telegram...")
         await asyncio.wait_for(client.connect(), 30)
-        await asyncio.wait_for(client.send_code_request(phone), 30)
-        code = hidden("Telegram login code (hidden): ").strip()
+        stage = "requesting the login code"
+        print("Requesting your login code...")
+        await request_login_code(client, phone)
+        code = input("Telegram login code: ").strip()
+        stage = "checking the login code"
         try:
             await asyncio.wait_for(client.sign_in(phone=phone, code=code), 30)
         except errors.SessionPasswordNeededError:
-            await asyncio.wait_for(client.sign_in(password=hidden("Telegram two-step password (hidden): ")), 30)
+            stage = "checking the two-step password"
+            await asyncio.wait_for(client.sign_in(password=input("Telegram two-step password: ")), 30)
         authenticated = True
+        stage = "reading the account identity"
         me = await asyncio.wait_for(client.get_me(), 30)
         if me.bot:
             raise UserError("Use a personal account, not a bot.")
         print("Account: {} {} | ID {}".format(me.first_name or "", me.last_name or "", me.id))
-        print("Saving permits future local read access; live sends still need --enable-sends and specific user authorization.")
-        if input("Type SAVE to persist this account session encrypted on this PC: ").strip() != "SAVE":
+        print("The saved session allows future local read access. Live sending stays disabled.")
+        if not save_session and input("Save this account session encrypted on this PC? [y/N]: ").strip().lower() not in ("y", "yes"):
             raise UserError("Persistent authorization declined.")
+        stage = "saving the encrypted session"
         values.update({"session": client.session.save(), "account_id": str(me.id)})
         save_credentials(directory, values)
         saved = True
         print("Encrypted local account session saved. No messages sent. No MCP client configuration changed.")
+    except UserError:
+        raise
+    except Exception as error:
+        raise login_failure(stage, error) from None
     finally:
         if authenticated and not saved:
             try:
                 await asyncio.wait_for(client.log_out(), 15)
             except Exception:
                 print("Could not revoke the temporary login. Remove 'Ken Telegram MCP' in Telegram Settings > Devices.", file=sys.stderr)
-        await client.disconnect()
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.disconnect(), 15)
+            except Exception as error:
+                # Cleanup must never replace the original failure or a saved-session success.
+                print(login_failure("closing the Telegram connection", error), file=sys.stderr)

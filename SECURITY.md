@@ -2,7 +2,7 @@
 
 This is a single-owner personal Telegram MCP tool. Its default transport is a
 fake offline account. Publishing the source grants no access to any account.
-Development tests never connect to Telegram or persist a real session.
+Automated tests never connect to Telegram or persist a real session.
 
 ## Authorization
 
@@ -24,8 +24,9 @@ Development tests never connect to Telegram or persist a real session.
 
 ## Credentials and retained data
 
-Login is a local interactive Windows handoff with hidden input and separate
-authorization/persistence prompts. Windows DPAPI encrypts the stored session
+Login is a local interactive Windows handoff with visible input and a yes/no
+session-saving prompt; `--save-session` skips that prompt when saving is already
+authorized. Windows DPAPI encrypts the stored session
 and API credentials for the current user; folder ACLs restrict access to that
 user and SYSTEM. Same-user malware or an administrator can compromise the
 account: DPAPI does not defend against that threat. Memory contains decrypted
@@ -37,6 +38,17 @@ not archived by this app. Your assistant provider, tunnel, OAuth provider and
 reverse proxy have their own retention and security policies. Configure those
 explicitly; do not enable request-body, Authorization-header or verbose RPC logs.
 No raw sensitive exception details are returned by the application CLI.
+
+Attachment access is limited to a dedicated local inbox. MCP accepts a plain
+filename, never an arbitrary path or URL. Links and alternate data streams are
+rejected; actual file handles, bounds and SHA-256 are checked. The inbox should
+contain only files the owner has explicitly selected for sharing. An authorized
+assistant can see names/sizes and prepare those files; it cannot fetch their raw
+contents through these tools. Sending still requires the exact recipient/file
+authorization and send scope. Each prepared file is retained as a plaintext
+snapshot in the private profile, with a 50 MiB per-file and 250 MiB total limit.
+Snapshots remain until removed locally. The app does not execute or render them.
+Filename extensions determine MIME types; this is not a malware scanner.
 
 Use the default live profile under local application data, outside a synced
 checkout. Backups can contain private outbox data and encrypted credentials.
@@ -64,8 +76,9 @@ service or a compromised owner account.
 
 `.gitignore` excludes sessions, encrypted credentials, databases, local profiles,
 environment files, private-key files and local raw verification logs. The audit
-script checks staged/tracked files and optionally all reachable Git history for
+script checks the Git index and optionally all reachable Git history for
 sensitive paths, common credential formats, machine-user paths and PNG metadata.
+Use `--working-tree` to check current edits and unignored new files before staging.
 It is a heuristic check, not a guarantee; review staged changes before pushing.
 Only synthetic screenshots belong in `evidence/`. Never post a real session,
 token, login code, private message or unredacted log in an issue.

@@ -33,7 +33,7 @@ for eligibility, downloads and account setup; availability depends on permission
 
 5. In ChatGPT, enable Developer mode under Settings > Security and login. Open
    Plugins, select the plus button, choose Connection: Tunnel and select/paste
-   the tunnel ID. Review the eleven discovered tools. Add that connection to a
+   the tunnel ID. Review the thirteen discovered tools. Add that connection to a
    new chat. See the [official connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt).
 6. Verify `get_identity` reports demo account `9000`; list fake chats, prepare a
    synthetic message and explicitly send it. Its status must be `simulated`.
@@ -129,7 +129,7 @@ directory. Add `--enable-sends` only when authorized. The optional
    endpoint using ChatGPT's developer-mode connection settings and OAuth. Supply
    provider client credentials only in the appropriate trusted settings UI if
    that provider requires them; they do not belong in this server's config.
-2. Sign in as the configured owner. Discover eleven tools and verify identity.
+2. Sign in as the configured owner. Discover thirteen tools and verify identity.
    A read-only token can read and prepare drafts but cannot send. Reauthorize
    with `telegram.send` when sending is intended.
 3. Exercise demo first. Check the prepared exact peer/text, authorize it, send,

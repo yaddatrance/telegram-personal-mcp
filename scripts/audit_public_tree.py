@@ -1,6 +1,7 @@
 """Heuristic publication gate. Prints finding categories/paths, never matched secrets."""
 import argparse
 import re
+import stat
 import struct
 import subprocess
 import sys
@@ -28,10 +29,10 @@ def private_path(name):
     path = PurePosixPath(name)
     parts = {p.lower() for p in path.parts}
     lower = name.lower()
-    return (bool(parts & {".local", ".venv", "archive", "__pycache__", "node_modules"})
+    return (bool(parts & {".local", ".venv", "archive", "__pycache__", "node_modules", "attachments", "attachment-blobs"})
             or (path.name.startswith(".env") and path.name != ".env.example")
             or any(marker in lower for marker in (".session", ".sqlite", ".dpapi", "credentials", "library-uploads"))
-            or path.suffix.lower() in {".db", ".key", ".pem", ".pfx", ".p12", ".log"}
+            or path.suffix.lower() in {".db", ".key", ".pem", ".pfx", ".p12", ".log", ".blob", ".epub"}
             or lower in {"remote-config.json", "evidence/test-results.txt", "evidence/verification.json"})
 
 
@@ -63,20 +64,36 @@ def inspect_blob(name, data):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--history", action="store_true")
+    parser.add_argument("--working-tree", action="store_true",
+                        help="Inspect current tracked and unignored new files instead of the Git index")
     args = parser.parse_args()
     try:
-        # Inspect exact index bytes, not a potentially different working copy.
-        names = git("ls-files", "-z").decode().split("\x00")
-        blobs = [(name, git("show", ":" + name)) for name in names if name]
+        if args.working_tree:
+            names = git("ls-files", "--cached", "--others", "--exclude-standard", "-z").decode().split("\x00")
+            blobs = []
+            for name in sorted(set(names) - {""}):
+                path = ROOT / name
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    continue  # A tracked deletion is absent from the proposed tree.
+                if (not stat.S_ISREG(info.st_mode)
+                        or getattr(info, "st_file_attributes", 0) & 0x400):
+                    raise ValueError("Working-tree links and special files require manual review")
+                blobs.append((name, path.read_bytes()))
+        else:
+            # Publishing still defaults to the exact Git index bytes.
+            names = git("ls-files", "-z").decode().split("\x00")
+            blobs = [(name, git("show", ":" + name)) for name in names if name]
         if not blobs:
-            raise ValueError("No staged/tracked public files to inspect")
+            raise ValueError("No public files to inspect")
         if args.history:
             for line in git("rev-list", "--objects", "--all").decode().splitlines():
                 oid, _, name = line.partition(" ")
                 if name and git("cat-file", "-t", oid).strip() == b"blob":
                     blobs.append((name, git("cat-file", "blob", oid)))
-    except (subprocess.CalledProcessError, ValueError):
-        print("Audit could not read the Git index/history. Run in a staged Git checkout.")
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        print("Audit could not read the selected Git files/history. Check the checkout and file types.")
         return 2
     findings = set()
     for name, data in blobs:
@@ -85,7 +102,8 @@ def main():
         print(f"FAIL {category}: {name}")
     if findings:
         return 1
-    print(f"PASS: {len(blobs)} staged/history blob checks; no flagged paths, common credentials or image metadata.")
+    selected = "working-tree" if args.working_tree else "staged"
+    print(f"PASS: {len(blobs)} {selected}/history blob checks; no flagged paths, common credentials or image metadata.")
     return 0
 
 

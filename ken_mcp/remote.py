@@ -198,7 +198,7 @@ def build_http_app(service, config, verifier=None):
     return app
 
 
-async def serve_http(directory, live, enable_sends, require_local_approval, config, port):
+async def serve_http(directory, live, enable_sends, require_local_approval, config, port, attachment_dir=None):
     import uvicorn
     from .account import connect_existing
     from .security import ProfileLock
@@ -209,7 +209,7 @@ async def serve_http(directory, live, enable_sends, require_local_approval, conf
         transport = await connect_existing(directory) if live else FakeTransport()
         store = Store(directory / "outbox.sqlite3", "live" if live else "demo")
         try:
-            service = Messenger(store, transport, enable_sends, require_local_approval)
+            service = Messenger(store, transport, enable_sends, require_local_approval, attachment_dir)
             await service.start()
             app = build_http_app(service, config)
             await uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port,

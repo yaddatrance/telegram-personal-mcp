@@ -6,6 +6,10 @@ __pycache__/
 .env.*
 !.env.example
 .local/
+attachments/
+attachment-blobs/
+*.blob
+*.epub
 *.session*
 *.sqlite*
 *.db*

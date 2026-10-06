@@ -11,13 +11,17 @@ class UserError(Exception):
     pass
 
 
-def digest_message(account_id, peer_id, text, reply_to):
-    canonical = json.dumps([account_id, peer_id, text, reply_to], ensure_ascii=False, separators=(",", ":"))
+def digest_message(account_id, peer_id, text, reply_to, attachment=None):
+    fields = [account_id, peer_id, text, reply_to]
+    if attachment is not None:
+        fields.append(attachment)
+    canonical = json.dumps(fields, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class Store:
     def __init__(self, path, mode, clock=time.time):
+        self.directory = Path(path).resolve().parent
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.clock = clock
         self.db = sqlite3.connect(str(path), timeout=5)
@@ -35,6 +39,10 @@ class Store:
             CREATE INDEX IF NOT EXISTS draft_digest ON drafts(digest);
             CREATE TABLE IF NOT EXISTS attempts (draft_id TEXT NOT NULL, created REAL NOT NULL);
         """)
+        if "attachment" not in {row[1] for row in self.db.execute("PRAGMA table_info(drafts)")}:
+            self.db.execute("ALTER TABLE drafts ADD COLUMN attachment TEXT")
+        if "delivery_progress" not in {row[1] for row in self.db.execute("PRAGMA table_info(drafts)")}:
+            self.db.execute("ALTER TABLE drafts ADD COLUMN delivery_progress TEXT")
         current = self.meta("mode")
         if current and current != mode:
             self.db.close()
@@ -76,15 +84,17 @@ class Store:
                 "preview_sha256": row["digest"], "status": row["status"], "detail": row["detail"],
                 "created_at": row["created"], "expires_at": row["expires"], "retry_at": row["retry_at"],
                 "message_id": row["message_id"],
+                "attachment": json.loads(row["attachment"]) if row.get("attachment") else None,
+                "delivery_progress": json.loads(row["delivery_progress"]) if row.get("delivery_progress") else None,
                 "locally_approved": row["approved_until"] > self.clock() and row["status"] == "prepared"}
 
-    def prepare(self, key, account_id, peer, text, reply_to):
-        digest = digest_message(account_id, peer["peer_id"], text, reply_to)
+    def prepare(self, key, account_id, peer, text, reply_to, attachment=None):
+        digest = digest_message(account_id, peer["peer_id"], text, reply_to, attachment)
         with self.db:
             row = self.db.execute("SELECT * FROM drafts WHERE request_key=?", (key,)).fetchone()
             if row:
                 if row["digest"] != digest:
-                    raise UserError("Idempotency key already belongs to a different recipient, reply, or text.")
+                    raise UserError("Idempotency key already belongs to a different recipient, reply, text, or attachment.")
                 return self.public(dict(row))
             self.db.execute("UPDATE drafts SET status='expired',detail='Draft expired; prepare a new request.' WHERE status='prepared' AND expires<=?", (self.clock(),))
             duplicate = self.db.execute("""SELECT id FROM drafts WHERE digest=? AND
@@ -95,10 +105,11 @@ class Store:
                 raise UserError("An identical request is pending, recently sent, or uncertain. Check the existing outbox entry.")
             draft_id = secrets.token_hex(16)
             self.db.execute("""INSERT INTO drafts
-                (id,request_key,account_id,peer_id,peer_name,text,reply_to,digest,random_id,status,created,expires)
-                VALUES (?,?,?,?,?,?,?,?,?,'prepared',?,?)""",
+                (id,request_key,account_id,peer_id,peer_name,text,reply_to,digest,random_id,status,created,expires,attachment)
+                VALUES (?,?,?,?,?,?,?,?,?,'prepared',?,?,?)""",
                 (draft_id, key, account_id, peer["peer_id"], peer["name"], text, reply_to, digest,
-                 secrets.randbelow(2**63 - 1) + 1, self.clock(), self.clock() + 1800))
+                 secrets.randbelow(2**63 - 1) + 1, self.clock(), self.clock() + 1800,
+                 json.dumps(attachment, sort_keys=True) if attachment else None))
             return self.public(self.item(draft_id))
 
     def approve_local(self, draft_id, expected_digest):
@@ -154,6 +165,15 @@ class Store:
             self.db.execute("UPDATE drafts SET status=?,detail=?,message_id=?,retry_at=? WHERE id=?",
                             (status, detail, message_id, retry_at, draft_id))
         return self.public(self.item(draft_id))
+
+    def note_delivery_progress(self, draft_id, stage, uploaded_bytes, total_bytes):
+        if stage not in ("uploading", "uploaded", "dispatching") or not (type(uploaded_bytes) is int
+                and type(total_bytes) is int and 0 <= uploaded_bytes <= total_bytes):
+            raise UserError("Invalid local delivery progress.")
+        progress = {"stage": stage, "uploaded_bytes": uploaded_bytes, "total_bytes": total_bytes}
+        with self.db:
+            self.db.execute("UPDATE drafts SET delivery_progress=? WHERE id=? AND status='sending'",
+                            (json.dumps(progress), draft_id))
 
     def recent(self, limit=20):
         return [self.public(dict(row)) for row in self.db.execute("SELECT * FROM drafts ORDER BY created DESC,rowid DESC LIMIT ?", (limit,))]
